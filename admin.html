@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ALTO Admin — Technician Response Monitor</title>
+<title>ALTO Admin — Power Monitor</title>
 <script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
 <style>
 /* Using your Crimson Admin Theme */
@@ -58,7 +58,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); min-
   <header class="header">
     <div>
       <h1>IDF Performance Monitor</h1>
-      <span class="admin-badge">Technician Response Tracking</span>
+      <span class="admin-badge">Power Monitoring</span>
     </div>
     <div id="mqttStatus">📡 MQTT: Disconnected</div>
   </header>
@@ -78,7 +78,7 @@ const CFG = {
   topic: "powerstatus",
   user: "hivemq.webclient.1774403587074",
   pass: "eQ!nKB0@2zRY1S3u<>aj",
-  offlineMs: 5000 // Threshold for Technician Response Alert
+  offlineMs: 5000 // Threshhold for declaring offline
 };
 
 let devices = new Map();
