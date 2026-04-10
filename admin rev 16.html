@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ALTO Admin — Technician Response Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
+<style>
+/* Using your Crimson Admin Theme */
+:root {
+  --accent:     #DC143C;
+  --accent-dk:  #8B0000;
+  --border:     rgba(220,20,60,0.25);
+  --bg:         #0a0a0f;
+  --bg2:        rgba(12,18,32,0.95);
+  --text:       #ffffff;
+  --muted:      rgba(255,255,255,0.45);
+  --online:     #4caf50;
+  --warning:    #ff9800;
+  --offline:    #f44336;
+  --font:       'Segoe UI', system-ui, sans-serif;
+  --mono:       'Courier New', monospace;
+  --radius:     18px;
+  --gap:        18px;
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; padding: 18px; }
+.wrap { max-width:1600px; margin:0 auto; position:relative; z-index:1; }
+
+/* HEADER */
+.header { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 24px; margin-bottom: var(--gap); display: flex; justify-content: space-between; align-items: center; }
+.admin-badge { background: linear-gradient(135deg, var(--accent), var(--accent-dk)); color: #fff; font-size:.65rem; font-weight:700; padding:3px 10px; border-radius:20px; text-transform:uppercase; }
+
+/* DEVICE GRID */
+.devices { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; margin-bottom: 20px; }
+.card { background:var(--bg2); border:1px solid var(--border); border-left:4px solid var(--online); border-radius:var(--radius); padding:18px; transition: 0.3s; }
+.card.offline { border-left-color: var(--offline); background:rgba(50,18,18,0.6); }
+
+/* TIME MONITORING STYLES */
+.time-metric { display: flex; justify-content: space-between; font-size: 0.75rem; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.time-metric b { font-family: var(--mono); color: var(--accent); }
+.response-timer { color: var(--online); font-weight: bold; }
+.response-timer.slow { color: var(--warning); }
+.response-timer.dead { color: var(--offline); }
+
+/* LOG */
+.log-panel { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
+.log-list { max-height:300px; overflow-y:auto; font-size: 0.7rem; font-family: var(--mono); }
+.log-item { padding: 5px; border-bottom: 1px solid var(--border); }
+
+.btn { border:none; cursor:pointer; font-weight:700; border-radius:8px; padding:10px 16px; background:linear-gradient(135deg,var(--accent),var(--accent-dk)); color:#fff; transition: 0.2s; }
+.btn:hover { opacity: 0.8; transform: translateY(-1px); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="header">
+    <div>
+      <h1>IDF Performance Monitor</h1>
+      <span class="admin-badge">Technician Response Tracking</span>
+    </div>
+    <div id="mqttStatus">📡 MQTT: Disconnected</div>
+  </header>
+
+  <div id="devGrid" class="devices"></div>
+
+  <aside class="log-panel">
+    <h3>📋 Response Incident Log</h3>
+    <div class="log-list" id="logList"></div>
+    <button class="btn" onclick="exportCSV()" style="margin-top:10px;">📥 Export Response Data</button>
+  </aside>
+</div>
+
+<script>
+const CFG = {
+  broker: "wss://b01384c7f4aa43c2a7950f4fd7c8bb18.s1.eu.hivemq.cloud:8884/mqtt",
+  topic: "powerstatus",
+  user: "hivemq.webclient.1774403587074",
+  pass: "eQ!nKB0@2zRY1S3u<>aj",
+  offlineMs: 5000 // Threshold for Technician Response Alert
+};
+
+let devices = new Map();
+let eventLog = [];
+
+// Matches Arduino: ALIVE[0] | Name[1] | Temp[2] | Door[3] | Humidity[4]
+function parse(raw) {
+  const p = raw.split('|').map(s => s.trim());
+  return {
+    device: p[1] || 'Unknown Node',
+    temp:   p[2] || '--',
+    door:   p[3] || 'NORMAL',
+    humid:  p[4] || '--'
+  };
+}
+
+function updateDevice(parsed, raw) {
+  const now = Date.now();
+  const serverTime = new Date().toLocaleTimeString(); // When the data hit the admin side
+  let dev = devices.get(parsed.device) || { name: parsed.device, status: 'online' };
+  
+  // Logic: If device was offline and is now back, log the recovery time
+  if(dev.status === 'offline') {
+    addLog(`⚡ RECOVERY: ${parsed.device} reconnected at ${serverTime}`);
+  }
+
+  dev = {
+    ...dev, 
+    ...parsed, 
+    lastArrival: now, 
+    lastArrivalStr: serverTime, 
+    status: 'online', 
+    raw: raw
+  };
+
+  devices.set(parsed.device, dev);
+  render();
+}
+
+function addLog(msg) {
+  const time = new Date().toLocaleTimeString();
+  eventLog.unshift({time, msg});
+  document.getElementById('logList').innerHTML = eventLog.map(e => `<div class="log-item">[${e.time}] ${e.msg}</div>`).join('');
+}
+
+function formatGap(ms) {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  return `${min}m ${sec % 60}s`;
+}
+
+function render() {
+  const grid = document.getElementById('devGrid');
+  const now = Date.now();
+
+  grid.innerHTML = [...devices.values()].map(d => {
+    const gap = now - d.lastArrival;
+    let timerClass = "response-timer";
+    if (gap > 3000) timerClass += " slow";
+    if (gap > CFG.offlineMs) timerClass += " dead";
+
+    return `
+    <div class="card ${d.status}">
+      <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+        <b style="color:var(--accent)">📡 ${d.name}</b>
+        <span class="badge">${d.status.toUpperCase()}</span>
+      </div>
+
+      <div class="time-metric">
+        <span>Last Data Sent (Node Time):</span>
+        <b>${d.lastArrivalStr}</b>
+      </div>
+
+      <div class="time-metric">
+        <span>Response Time Monitoring:</span>
+        <span class="${timerClass}" id="gap-${d.name}">${formatGap(gap)} ago</span>
+      </div>
+
+      <div style="margin: 15px 0; display:flex; gap:10px;">
+        <small>🌡️ ${d.temp}</small>
+        <small>💧 ${d.humid}</small>
+        <small>🚪 ${d.door}</small>
+      </div>
+      
+      <div style="font-size:0.55rem; color:var(--muted); font-family:var(--mono); background:rgba(0,0,0,0.3); padding:5px; border-radius:4px; word-break:break-all;">
+        RAW: ${d.raw}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Live Update for the "Time Since" counters every second
+setInterval(() => {
+  const now = Date.now();
+  devices.forEach(d => {
+    const gap = now - d.lastArrival;
+    
+    // Update the specific timer text without re-rendering the whole card
+    const el = document.getElementById(`gap-${d.name}`);
+    if (el) {
+      el.innerText = `${formatGap(gap)} ago`;
+      if (gap > CFG.offlineMs && d.status === 'online') {
+        d.status = 'offline';
+        addLog(`❌ ALERT: ${d.name} Response Timeout!`);
+        render(); // Full render only on status change
+      }
+    }
+  });
+}, 1000);
+
+const client = mqtt.connect(CFG.broker, {username: CFG.user, password: CFG.pass});
+client.on('connect', () => { 
+  document.getElementById('mqttStatus').innerText = '📡 MQTT: Connected';
+  client.subscribe(CFG.topic); 
+});
+client.on('message', (t, m) => { updateDevice(parse(m.toString()), m.toString()); });
+
+function exportCSV() {
+  let csv = "Timestamp,Incident_Description\n" + eventLog.map(e => `"${e.time}","${e.msg}"`).join("\n");
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'technician_response_log.csv'; a.click();
+}
+</script>
+</body>
+</html>

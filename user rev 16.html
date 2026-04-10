@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ALTO Power Monitor — Live Status</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
+<style>
+/* Using your Azure Blue User Theme */
+:root {
+  --accent:     #1E88E5;
+  --accent-dk:  #0d47a1;
+  --border:     rgba(30,136,229,0.28);
+  --bg:         #07090f;
+  --bg2:        rgba(12,18,32,0.95);
+  --text:       #ffffff;
+  --muted:      rgba(255,255,255,0.45);
+  --online:     #4caf50;
+  --offline:    #f44336;
+  --font:       'Segoe UI', system-ui, sans-serif;
+  --radius:     18px;
+  --gap:        18px;
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; padding: 18px; }
+.wrap { max-width:1400px; margin:0 auto; position:relative; z-index:1; }
+
+/* HEADER */
+.header {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 24px;
+  margin-bottom: var(--gap);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.user-badge {
+  background: linear-gradient(135deg, var(--accent), var(--accent-dk));
+  color: #fff; font-size:.65rem; font-weight:700;
+  padding:3px 10px; border-radius:20px; text-transform:uppercase;
+}
+
+/* CARDS */
+.devices { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:16px; }
+.card {
+  background:var(--bg2); border:1px solid var(--border);
+  border-left:5px solid var(--online);
+  border-radius:var(--radius); padding:20px; transition:all 0.3s ease;
+}
+.card.offline { border-left-color: var(--offline); opacity: 0.85; }
+
+.temp-val { font-size: 3.5rem; font-weight: 800; color: var(--accent); line-height: 1; margin: 15px 0 5px 0; }
+.humid-row { font-size: 1.1rem; color: var(--muted); margin-bottom: 20px; }
+
+/* DOOR STATUS PILL */
+.door-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 16px; border-radius: 30px; font-weight: 700; font-size: 0.85rem;
+  background: rgba(255,255,255,0.05); color: var(--muted);
+}
+.door-pill.active {
+  background: rgba(244, 67, 54, 0.15); color: #ff8a80;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  animation: pulse-red 1.5s infinite;
+}
+@keyframes pulse-red { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+.card-foot {
+  margin-top: 20px; padding-top: 15px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted);
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="header">
+    <div>
+      <h1 style="font-size: 1.4rem;">ALTO Live Status</h1>
+      <span class="user-badge">IDF Monitoring</span>
+    </div>
+    <div id="connLabel" style="font-size: 0.8rem; color: var(--muted);">Connecting...</div>
+  </header>
+
+  <div id="devGrid" class="devices">
+    </div>
+
+  <footer style="text-align:center; margin-top:40px; font-size:0.7rem; color:var(--muted);">
+    ⚡ WT32-ETH01 Powered | Real-time Performance Tracking
+  </footer>
+</div>
+
+<script>
+const CFG = {
+  broker: "wss://b01384c7f4aa43c2a7950f4fd7c8bb18.s1.eu.hivemq.cloud:8884/mqtt",
+  topic: "powerstatus",
+  user: "hivemq.webclient.1774403587074",
+  pass: "eQ!nKB0@2zRY1S3u<>aj",
+  offlineThreshold: 6000 // If no data for 6s, show as offline
+};
+
+let devices = new Map();
+
+// Parsing matches Arduino: [1]Name | [2]Temp | [3]Door | [4]Humid
+function parse(raw) {
+  const p = raw.split('|').map(s => s.trim());
+  return {
+    device: p[1] || 'Unknown Node',
+    temp:   p[2] || '--',
+    door:   p[3] || 'NORMAL',
+    humid:  p[4] || '--'
+  };
+}
+
+function render() {
+  const grid = document.getElementById('devGrid');
+  const now = Date.now();
+
+  if (devices.size === 0) {
+    grid.innerHTML = `<div style="padding:40px; color:var(--muted);">Waiting for IDF data stream...</div>`;
+    return;
+  }
+
+  grid.innerHTML = [...devices.values()].map(d => {
+    const isOffline = d.status === 'offline';
+    const doorClass = d.door === 'ACTIVE' ? 'active' : '';
+    const lastSeenStr = new Date(d.lastArrival).toLocaleTimeString();
+
+    return `
+    <div class="card ${isOffline ? 'offline' : ''}">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-weight:700; letter-spacing:0.5px; color:var(--accent)">📡 ${d.device}</span>
+        <span style="font-size:0.7rem; color:${isOffline ? 'var(--offline)' : 'var(--online)'}; font-weight:900;">
+          ● ${isOffline ? 'OFFLINE' : 'ONLINE'}
+        </span>
+      </div>
+
+      <div class="temp-val">${d.temp}</div>
+      <div class="humid-row">💧 ${d.humid} Humidity</div>
+
+      <div class="door-pill ${doorClass}">
+        ${d.door === 'ACTIVE' ? '🚨 BREACH DETECTED' : '🛡️ SYSTEM SECURE'}
+      </div>
+
+      <div class="card-foot">
+        <span>Last Check-in:</span>
+        <span>${lastSeenStr}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+const client = mqtt.connect(CFG.broker, {username: CFG.user, password: CFG.pass});
+
+client.on('connect', () => { 
+  document.getElementById('connLabel').innerText = '🟢 Connected to HiveMQ';
+  client.subscribe(CFG.topic); 
+});
+
+client.on('message', (t, m) => {
+  const raw = m.toString();
+  const parsed = parse(raw);
+  
+  devices.set(parsed.device, {
+    ...parsed,
+    lastArrival: Date.now(),
+    status: 'online'
+  });
+  render();
+});
+
+// Offline Watchdog
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  devices.forEach(d => {
+    if (d.status === 'online' && (now - d.lastArrival > CFG.offlineThreshold)) {
+      d.status = 'offline';
+      changed = true;
+    }
+  });
+  if (changed) render();
+}, 2000);
+</script>
+</body>
+</html>
